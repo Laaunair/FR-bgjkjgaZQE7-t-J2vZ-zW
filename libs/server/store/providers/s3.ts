@@ -6,16 +6,22 @@ import {
     GetObjectCommand,
     HeadObjectCommand,
     PutObjectCommand,
-    S3Client,
+    S3Client
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { streamToBuffer } from '../utils';
 import { Readable } from 'stream';
 import { isEmpty, toNumber } from 'lodash';
 import { Client as MinioClient } from 'minio';
+import { createLogger, Logger } from 'libs/server/debugging';
 
 function isNoSuchKey(err: any) {
-    return err.code === 'NoSuchKey' || err.message === 'NoSuchKey' || err.name === "NoSuchKey";
+    return (
+        err.code === 'NoSuchKey' ||
+        err.message === 'NoSuchKey' ||
+        err.name === 'NoSuchKey' ||
+        err.type == 'NotFound'
+    );
 }
 
 /**
@@ -33,9 +39,11 @@ export interface S3Config extends StoreProviderConfig {
 export class StoreS3 extends StoreProvider {
     client: S3Client;
     config: S3Config;
+    logger: Logger;
 
     constructor(config: S3Config) {
         super(config);
+        this.logger = createLogger('store.s3');
         this.client = new S3Client({
             forcePathStyle: config.pathStyle,
             region: config.region,
@@ -43,13 +51,13 @@ export class StoreS3 extends StoreProvider {
             credentials:
                 config.accessKey && config.secretKey
                     ? {
-                          accessKeyId: config.accessKey,
-                          secretAccessKey: config.secretKey,
-                      }
-                    : undefined,
+                        accessKeyId: config.accessKey,
+                        secretAccessKey: config.secretKey
+                    }
+                    : undefined
         });
         if (!config.accessKey || !config.secretKey) {
-            console.log(
+            this.logger.warn(
                 '[Notea] Environment variables STORE_ACCESS_KEY or STORE_SECRET_KEY is missing. Trying to use IAM role credentials instead ...'
             );
         }
@@ -71,7 +79,7 @@ export class StoreS3 extends StoreProvider {
                     secretKey: creds.secretAccessKey,
                     endPoint: url.hostname,
                     useSSL: url.protocol === 'https:',
-                    port: toNumber(url.port),
+                    port: toNumber(url.port)
                 });
 
                 return await client.presignedGetObject(
@@ -85,7 +93,7 @@ export class StoreS3 extends StoreProvider {
             this.client,
             new GetObjectCommand({
                 Bucket: this.config.bucket,
-                Key: this.getPath(path),
+                Key: this.getPath(path)
             }),
             { expiresIn: expires }
         );
@@ -96,12 +104,14 @@ export class StoreS3 extends StoreProvider {
             const data = await this.client.send(
                 new HeadObjectCommand({
                     Bucket: this.config.bucket,
-                    Key: this.getPath(path),
+                    Key: this.getPath(path)
                 })
             );
 
             return !!data;
         } catch (e) {
+            if (!isNoSuchKey(e)) return false;
+            this.logger.warn(e, 'Error whilst checking if object %s exists', path);
             return false;
         }
     }
@@ -113,7 +123,7 @@ export class StoreS3 extends StoreProvider {
             const result = await this.client.send(
                 new GetObjectCommand({
                     Bucket: this.config.bucket,
-                    Key: this.getPath(path),
+                    Key: this.getPath(path)
                 })
             );
             content = await streamToBuffer(result.Body as Readable);
@@ -131,7 +141,7 @@ export class StoreS3 extends StoreProvider {
             const result = await this.client.send(
                 new HeadObjectCommand({
                     Bucket: this.config.bucket,
-                    Key: this.getPath(path),
+                    Key: this.getPath(path)
                 })
             );
             return result.Metadata;
@@ -152,7 +162,7 @@ export class StoreS3 extends StoreProvider {
             const result = await this.client.send(
                 new GetObjectCommand({
                     Bucket: this.config.bucket,
-                    Key: this.getPath(path),
+                    Key: this.getPath(path)
                 })
             );
             content = await streamToBuffer(result.Body as Readable);
@@ -168,7 +178,7 @@ export class StoreS3 extends StoreProvider {
             content: toStr(content, isCompressed),
             meta,
             contentType,
-            buffer: content,
+            buffer: content
         };
     }
 
@@ -178,6 +188,7 @@ export class StoreS3 extends StoreProvider {
         options?: ObjectOptions,
         isCompressed?: boolean
     ) {
+        this.logger.debug('Sending command to put object %s', path);
         await this.client.send(
             new PutObjectCommand({
                 Bucket: this.config.bucket,
@@ -187,7 +198,7 @@ export class StoreS3 extends StoreProvider {
                 CacheControl: options?.headers?.cacheControl,
                 ContentDisposition: options?.headers?.contentDisposition,
                 ContentEncoding: options?.headers?.contentEncoding,
-                ContentType: options?.contentType,
+                ContentType: options?.contentType
             })
         );
     }
@@ -196,7 +207,7 @@ export class StoreS3 extends StoreProvider {
         await this.client.send(
             new DeleteObjectCommand({
                 Bucket: this.config.bucket,
-                Key: this.getPath(path),
+                Key: this.getPath(path)
             })
         );
     }
@@ -212,7 +223,7 @@ export class StoreS3 extends StoreProvider {
                 ContentDisposition: options?.headers?.contentDisposition,
                 ContentEncoding: options?.headers?.contentEncoding,
                 ContentType: options?.contentType,
-                MetadataDirective: isEmpty(options?.meta) ? 'COPY' : 'REPLACE',
+                MetadataDirective: isEmpty(options?.meta) ? 'COPY' : 'REPLACE'
             })
         );
     }
